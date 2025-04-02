@@ -1,9 +1,13 @@
 import time
-import sys # Import sys for logger configuration
-import datetime # Import datetime
-from pathlib import Path # Import Path
+import sys
+from pathlib import Path
 from . import config, database, reddit_scraper, llm_interface, text_analyzer
 from loguru import logger
+
+# Delay between processing posts (in seconds)
+POST_PROCESSING_DELAY = 5
+# Delay between LLM calls within a single post's processing (in seconds)
+INTRA_POST_LLM_DELAY = 3 # Increase if hitting rate limits
 
 def run_pipeline():
     """Runs the main processing pipeline."""
@@ -14,26 +18,21 @@ def run_pipeline():
     try:
         reddit = reddit_scraper.get_reddit_instance()
         conn = database.get_db_connection()
-        # Ensure tables exist
         database.create_tables(conn)
-        # Ensure LLM and Similarity models are loaded (checked within modules)
         if not llm_interface.client:
              raise ConnectionError("LLM Client failed to initialize.")
         if not text_analyzer.similarity_model:
             raise RuntimeError("Similarity model failed to load.")
-
     except Exception as e:
         logger.error(f"Pipeline initialization failed: {e}")
-        if conn:
-            conn.close()
+        if conn: conn.close()
         return
 
     # --- Fetch Posts ---
     posts = reddit_scraper.get_subreddit_posts(reddit, config.SUBREDDIT_NAME, config.POST_LIMIT)
     if not posts:
         logger.warning("No posts fetched. Exiting pipeline.")
-        if conn:
-            conn.close()
+        if conn: conn.close()
         return
 
     # --- Process Posts ---
@@ -41,84 +40,109 @@ def run_pipeline():
     skipped_count = 0
     error_count = 0
     for submission in posts:
-        post_id = submission.id # Get post_id early for logging
-        try:
-            logger.info(f"Processing post ID: {post_id} | Title: {submission.title[:60]}...")
+        post_id = submission.id
+        main_llm_advice_response = None # Store the main advice for similarity calculation
+        llm_call_successful = False # Track if main LLM call worked
 
-            # 1. Check if already processed (in processed_posts)
-            # We might still want to update LLM data even if processed,
-            # but for simplicity, let's skip if the main record exists.
+        try:
+            logger.info(f"--- Processing Post ID: {post_id} | Title: {submission.title[:60]}... ---")
+
+            # 1. Check if already processed (basic check, might need refinement)
             if database.check_post_processed(conn, post_id):
-                logger.info(f"Post {post_id} already processed. Skipping.")
+                logger.info(f"Post {post_id} core data already exists. Skipping.")
                 skipped_count += 1
-                continue
+                continue # Skip entire post processing if base record exists
 
             # 2. Extract Post Data
             post_data = reddit_scraper.extract_post_data(submission)
+            post_title = post_data['post_title']
+            post_body = post_data['post_body']
 
-            # 3. Get Top Comment
-            top_comment = reddit_scraper.get_top_comment(submission)
-            comment_data = reddit_scraper.extract_comment_data(top_comment)
+            # 3. Get Main LLM Advice for the Original Post
+            logger.info(f"Getting main LLM advice for OP (Post {post_id})...")
+            llm_op_result = llm_interface.get_llm_response(post_title, post_body)
+            time.sleep(INTRA_POST_LLM_DELAY) # Delay after LLM call
 
-            if not top_comment or not comment_data.get("top_comment_body"):
-                logger.warning(f"Skipping post {post_id} due to no valid top comment found.")
-                skipped_count +=1
-                time.sleep(2)
+            if llm_op_result:
+                # Check if LLM call was successful
+                main_llm_advice_response = llm_op_result['response']
+                llm_call_successful = True
+                # Insert LLM OP data (prompt + response) immediately after getting it
+                database.insert_processed_post(conn, post_data)
+                database.insert_llm_data(conn, post_id, llm_op_result['prompt'], main_llm_advice_response)
+                logger.info(f"Main LLM advice for post {post_id} stored successfully.")
+            else:
+                logger.error(f"Failed to get LLM advice for post {post_id}. Cannot proceed with comments for this post.")
+                # Insert core post data even if LLM fails? Or skip? Let's skip for now.
+                error_count += 1
+                
+                time.sleep(POST_PROCESSING_DELAY) # Wait before next post
                 continue
 
-            # --- LLM Interaction and Storing ---
-            # 4. Get LLM Response (returns dict with 'prompt' and 'response')
-            llm_result = llm_interface.get_llm_response(post_data['post_title'], post_data['post_body'])
+            # 4. Get Top Comments (if main LLM call was successful)
+            logger.info(f"Fetching top comments for post {post_id}...")
+            top_comments = reddit_scraper.get_top_comments(submission, limit=reddit_scraper.MAX_COMMENTS_TO_FETCH)
+            time.sleep(1) # Small delay after Reddit API call
 
-            llm_response_text = None # Initialize
-            if llm_result:
-                llm_prompt = llm_result['prompt']
-                llm_response_text = llm_result['response']
-                 # Insert LLM data first (or update if exists)
-                 # Note: This insert happens *before* the main processed_posts insert.
-                 # The FK constraint requires processed_posts record to exist first.
-                 # Let's insert processed_posts first, then llm_data.
+            if not top_comments:
+                logger.warning(f"No suitable top comments found for post {post_id}. Storing post data only.")
+                # Insert core post data even if no comments found
+                #database.insert_processed_post(conn, post_data)
+                processed_count += 1 # Count as processed (even without comments)
+                time.sleep(POST_PROCESSING_DELAY) # Wait before next post
+                continue
 
-            else:
-                logger.error(f"Failed to get LLM response for post {post_id}. Skipping LLM data storage and similarity.")
-                # Decide if you still want to store the post data without LLM info
-                # For now, let's skip the entire post if LLM fails
-                error_count += 1
-                time.sleep(5)
-                continue # Skip to next post
+            # --- Process Each Top Comment ---
+            logger.info(f"Processing {len(top_comments)} comments for post {post_id}...")
+            comments_processed_count = 0
+            for rank, comment in enumerate(top_comments, start=1):
+                comment_id = comment.id
+                comment_body = comment.body
+                comment_score = comment.score
+                is_actual_advice = None
+                similarity_score = None
 
-            # --- Similarity Calculation ---
-            # 5. Calculate Similarity (only if LLM response was successful)
-            similarity_score = None
-            if llm_response_text:
-                 similarity_score = text_analyzer.calculate_similarity(
-                     comment_data['top_comment_body'],
-                     llm_response_text # Use the extracted response text
-                 )
-                 if similarity_score is None:
-                     logger.warning(f"Could not calculate similarity for post {post_id}. Storing post without score.")
+                # 5. Verify Comment using LLM
+                logger.debug(f"Verifying comment rank {rank} (ID: {comment_id}) for post {post_id}...")
+                is_actual_advice = llm_interface.verify_comment_advice(post_title, post_body, comment_body)
+                time.sleep(INTRA_POST_LLM_DELAY) # Delay after *each* verification LLM call
+
+                if is_actual_advice is None:
+                     logger.warning(f"Verification failed or was ambiguous for comment {comment_id}.")
+
+                # 6. Calculate Similarity (e.g., only for Rank 1 comment vs main LLM advice)
+                if rank == 1 and main_llm_advice_response:
+                    logger.debug(f"Calculating similarity for rank 1 comment {comment_id}...")
+                    similarity_score = text_analyzer.calculate_similarity(
+                        comment_body,
+                        main_llm_advice_response
+                    )
+                    if similarity_score is None:
+                         logger.warning(f"Could not calculate similarity for comment {comment_id}.")
+
+                # 7. Store Comment Data
+                comment_data = {
+                    'post_id': post_id,
+                    'comment_id': comment_id,
+                    'comment_body': comment_body,
+                    'comment_score': comment_score,
+                    'comment_rank': rank,
+                    'is_actual_advice': is_actual_advice,
+                    'similarity_score': similarity_score
+                }
+                database.insert_post_comment(conn, comment_data)
+                comments_processed_count += 1
 
 
-            # --- Store Results ---
-            # 6. Store Core Post Data (without LLM response)
-            # Ensure 'created_utc' is correctly formatted or handled in insert function
-            processed_data = {
-                **post_data,
-                **comment_data,
-                "similarity_score": similarity_score, # Store similarity here
-            }
-            # Insert into processed_posts first because llm_data has a FK constraint
-            database.insert_processed_post(conn, processed_data)
-
-            # 7. Store LLM Data (linked to the post_id)
-            # Check again if llm_result was successful before inserting
-            if llm_result:
-                 database.insert_llm_data(conn, post_id, llm_result['prompt'], llm_result['response'])
-
+            # 8. Store Core Post Data (after processing comments)
+            # This ensures the post record exists before comments with FK are inserted
+            # (Correction: Moved insert_llm_data earlier, insert post data here)
+            database.insert_processed_post(conn, post_data)
             processed_count += 1
+            logger.success(f"Finished processing post {post_id} with {comments_processed_count} comments.")
 
-            # Add delay
-            time.sleep(5)
+            # Delay before processing the next post
+            time.sleep(POST_PROCESSING_DELAY)
 
         except KeyboardInterrupt:
             logger.warning("Pipeline interrupted by user.")
@@ -126,25 +150,23 @@ def run_pipeline():
         except Exception as e:
             logger.error(f"An unexpected error occurred processing post {post_id}: {e}", exc_info=True)
             error_count += 1
-            time.sleep(10)
+            time.sleep(POST_PROCESSING_DELAY * 2) # Longer delay after an error
 
     # --- Cleanup ---
     if conn:
         conn.close()
         logger.info("Database connection closed.")
 
-    logger.info(f"Pipeline run finished. Processed: {processed_count}, Skipped: {skipped_count}, Errors: {error_count}")
+    logger.info(f"Pipeline run finished. Posts processed: {processed_count}, Posts skipped: {skipped_count}, Post errors: {error_count}")
 
 
 if __name__ == '__main__':
-    # Configure Loguru
     log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True) # Ensure logs directory exists
+    log_dir.mkdir(exist_ok=True)
     log_file_path = log_dir / "pipeline_{time}.log"
 
-    # Remove default logger and add custom ones
     logger.remove()
-    logger.add(log_file_path, rotation="1 day", retention="7 days", level=config.LOG_LEVEL) # Log to file
-    logger.add(sys.stderr, level=config.LOG_LEVEL) # Log to console
+    logger.add(log_file_path, rotation="1 day", retention="7 days", level=config.LOG_LEVEL, backtrace=True, diagnose=True) # Enhanced logging
+    logger.add(sys.stderr, level="INFO") # Keep console INFO level clean
 
     run_pipeline()
