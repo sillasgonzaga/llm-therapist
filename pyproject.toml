@@ -1,0 +1,27 @@
+[project]
+name = "llm_therapist"
+version = "0.1.0"
+description = "Analyze Reddit posts from r/desabafos, compare LLM responses with top comments."
+authors = [{name = "Sillas Gonzaga", email = "sillas.gonzaga@gmail.com"}]
+requires-python = "==3.10.12" # Adjust Python version if needed
+dependencies = [
+    "praw==7.8.1",            # Python Reddit API Wrapper
+    "python-dotenv==1.1.0",   # Reads key-value pairs from .env file
+    "openai==1.70.0",          # Example: OpenAI's library. 
+    "sentence-transformers>=2.2.0", # For calculating semantic similarity
+    "torch==2.6.0",           # Dependency for sentence-transformers (can often use torch, tensorflow, or others)
+    "loguru==0.7.3",          # Optional: For better logging
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# Optional: Tool configuration for UV if needed, often defaults are fine
+# [tool.uv]
+# ...
+
+# Optional: If you want linters/formatters managed by UV
+# [tool.uv.dev-dependencies]
+# ruff = "..."
+# mypy = "..."
