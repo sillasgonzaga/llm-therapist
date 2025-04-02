@@ -5,12 +5,21 @@ description = "Analyze Reddit posts from r/desabafos, compare LLM responses with
 authors = [{name = "Sillas Gonzaga", email = "sillas.gonzaga@gmail.com"}]
 requires-python = "==3.10.12" # Adjust Python version if needed
 dependencies = [
-    "praw==7.8.1",            # Python Reddit API Wrapper
-    "python-dotenv==1.1.0",   # Reads key-value pairs from .env file
-    "openai==1.70.0",          # Example: OpenAI's library. 
-    "sentence-transformers>=2.2.0", # For calculating semantic similarity
-    "torch==2.6.0",           # Dependency for sentence-transformers (can often use torch, tensorflow, or others)
-    "loguru==0.7.3",          # Optional: For better logging
+    "praw==7.8.1",
+    # Python Reddit API Wrapper
+    "python-dotenv==1.1.0",
+    # Reads key-value pairs from .env file
+    "openai==1.70.0",
+    # Example: OpenAI's library.
+    "sentence-transformers>=2.2.0",
+    # For calculating semantic similarity
+    "torch==2.6.0",
+    # Dependency for sentence-transformers (can often use torch, tensorflow, or others)
+    "loguru==0.7.3",
+    "jupyter>=1.1.1",
+    "pandas==2.2.3",
+    "ipykernel>=6.29.5",
+    # Optional: For better logging
 ]
 
 [build-system]
