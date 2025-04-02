@@ -4,7 +4,7 @@ from . import config
 from loguru import logger
 import datetime
 from typing import List, Optional
-
+import time
 # Max comments to fetch and consider per post
 MAX_COMMENTS_TO_FETCH = 5
 
@@ -27,8 +27,18 @@ def get_subreddit_posts(reddit: praw.Reddit, subreddit_name: str, limit: int):
     """Fetches recent posts from a specified subreddit."""
     try:
         subreddit = reddit.subreddit(subreddit_name)
-        posts = list(subreddit.new(limit=limit))
-        logger.info(f"Fetched {len(posts)} posts from r/{subreddit_name}")
+        all_posts = list(subreddit.new(limit=limit*3))  # Fetch more to ensure we get enough recent posts
+        # Filter posts to only include those from the last 24 hours
+        twenty_four_hours_ago = time.time() - 24 * 60 * 60  # 24 hours in seconds
+        posts = [submission for submission in all_posts if submission.created_utc >= twenty_four_hours_ago]
+
+        # Limit to the specified number of posts
+        posts = posts[:limit]
+        # Log the number of posts fetched
+        if len(posts) < limit:
+            logger.warning(f"Fetched only {len(posts)} posts from r/{subreddit_name} instead of {limit}.")
+        else:
+            logger.info(f"Fetched {limit} posts from r/{subreddit_name}.")
         return posts
     except Exception as e:
         logger.error(f"Failed to fetch posts from r/{subreddit_name}: {e}")
