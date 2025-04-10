@@ -1,7 +1,7 @@
 import time
 import sys
 from pathlib import Path
-from . import config, database, reddit_scraper, llm_interface, text_analyzer
+from . import config, reddit_scraper, llm_interface, text_analyzer, database_cloud_sql
 from loguru import logger
 
 # Delay between processing posts (in seconds)
@@ -17,8 +17,9 @@ def run_pipeline():
     conn = None
     try:
         reddit = reddit_scraper.get_reddit_instance()
-        conn = database.get_db_connection()
-        database.create_tables(conn)
+        #conn = database.get_db_connection()
+        database_cloud_sql.get_engine() 
+        database_cloud_sql.create_tables()
         if not llm_interface.client:
              raise ConnectionError("LLM Client failed to initialize.")
         if not text_analyzer.similarity_model:

@@ -19,7 +19,15 @@ dependencies = [
     "jupyter>=1.1.1",
     "pandas==2.2.3",
     "ipykernel>=6.29.5",
-    # Optional: For better logging
+    # --- Add Cloud SQL Dependencies ---
+    "SQLAlchemy>=2.0.0",
+    "cloud-sql-python-connector[psycopg2]==1.18.0",
+    # Core ORM and connection pooling
+    # Choose ONE driver connector package: psycopg2 is common, pg8000 is pure Python
+    #"google-cloud-sql-connector[psycopg2]>=1.0.0", # Connector + psycopg2 driver
+    # OR use: "google-cloud-sql-connector[pg8000]>=1.0.0"
+    # If using the psycopg2 version, you might not need 'psycopg2-binary' explicitly listed
+    # "psycopg2-binary>=2.9.0" # Usually included by the connector package above
 ]
 
 [build-system]

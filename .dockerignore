@@ -1,0 +1,16 @@
+# .dockerignore
+.git
+.gitignore
+.github
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.db-journal*
+data/
+logs/
+notebooks/
+*.ipynb
+*.env
